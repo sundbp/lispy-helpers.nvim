@@ -1,10 +1,11 @@
-# lispy-kill.nvim
+# lispy-helpers.nvim
 
-A Neovim implementation of `lispy-kill` from the Emacs [lispy](https://github.com/abo-abo/lispy) package. This provides a structure-aware kill command that keeps parentheses balanced—essential for comfortable Lisp editing.
+A Neovim implementation of `lispy-kill` and `lispy-comment` from the Emacs [lispy](https://github.com/abo-abo/lispy) package. These provide structure-aware editing commands that keep parentheses balanced—essential for comfortable Lisp editing.
 
 ## Features
 
 - **Balanced killing**: Never leaves unmatched parentheses, brackets, or braces
+- **Sexp-aware commenting**: Comment entire s-expressions with a single keystroke
 - **Context-aware**: Behaves differently in strings, comments, and code
 - **Treesitter support**: Uses treesitter when available for accurate parsing
 - **Graceful fallback**: Works with vim syntax highlighting when treesitter isn't available
@@ -16,10 +17,11 @@ A Neovim implementation of `lispy-kill` from the Emacs [lispy](https://github.co
 
 ```lua
 {
-  'sundbp/lispy-kill.nvim',
+  'sundbp/lispy-helpers.nvim',
   ft = { 'lisp', 'scheme', 'clojure', 'fennel', 'racket', 'janet', 'yuck' },
   opts = {
-    key = '<C-k>',  -- default keybinding
+    kill_key = '<C-k>',  -- default keybinding
+    comment_key = ';',  -- default keybinding
   },
 }
 ```
@@ -28,11 +30,11 @@ Or with more explicit configuration:
 
 ```lua
 {
-  'sundbp/lispy-kill.nvim',
+  'sundbp/lispy-helpers.nvim',
   ft = { 'lisp', 'scheme', 'clojure', 'fennel', 'racket' },
   config = function()
-    require('lispy-kill').setup({
-      key = '<C-k>',
+    require('lispy-helpers').setup({
+      kill_key = '<C-k>',
       filetypes = { 'lisp', 'scheme', 'clojure', 'fennel', 'racket', 'janet', 'yuck' },
     })
   end,
@@ -43,10 +45,10 @@ Or with more explicit configuration:
 
 ```lua
 use {
-  'sundbp/lispy-kill.nvim',
+  'sundbp/lispy-helpers.nvim',
   ft = { 'lisp', 'scheme', 'clojure', 'fennel', 'racket' },
   config = function()
-    require('lispy-kill').setup()
+    require('lispy-helpers').setup()
   end,
 }
 ```
@@ -58,30 +60,36 @@ use {
    ```bash
    mkdir -p ~/.local/share/nvim/site/pack/plugins/start
    cd ~/.local/share/nvim/site/pack/plugins/start
-   git clone https://github.com/sundbp/lispy-kill.nvim
+   git clone https://github.com/sundbp/lispy-helpers.nvim
    ```
 
 2. Add to your `init.lua`:
 
    ```lua
-   require('lispy-kill').setup()
+   require('lispy-helpers').setup()
    ```
 
 ## Usage
 
-By default, `<C-k>` is bound in normal and insert mode for lisp filetypes.
+By default:
 
-You can also call the function directly:
+- `<C-k>` is bound for `lispy-kill` in normal and insert mode
+- `;` is bound for `lispy-comment` in normal and visual mode
+
+You can also call the functions directly:
 
 ```lua
 -- In a keymap
-vim.keymap.set('n', '<leader>k', require('lispy-kill').kill)
+vim.keymap.set('n', '<leader>k', require('lispy-helpers').kill)
+vim.keymap.set('n', '<leader>;', require('lispy-helpers').comment)
 
--- Or use the command
+-- Or use the commands
 :LispyKill
+:LispyComment
+:3LispyComment  " Comment 3 sexps
 ```
 
-## Behavior
+## lispy-kill Behavior
 
 The kill command tries these conditions in order (matching the original Emacs behavior):
 
@@ -153,12 +161,67 @@ The kill command tries these conditions in order (matching the original Emacs be
 (foo | bar)
 ```
 
+## lispy-comment Behavior
+
+The comment command (`;` by default) intelligently comments s-expressions:
+
+| Condition | Action |
+|-----------|--------|
+| At opening delimiter `(`, `[`, `{` | Comment entire sexp (all lines it spans) |
+| With count (e.g., `3;`) | Comment that many consecutive sexps |
+| Inside a comment | Uncomment the current line |
+| Visual selection | Comment/uncomment selected lines |
+| Otherwise | Comment current line |
+
+If the target lines are already commented, the command will uncomment them instead (toggle behavior).
+
+### Comment a sexp
+
+```lisp
+;; Before (cursor on opening paren):
+(defun foo ()
+  |(bar)
+  (baz))
+
+;; After ;:
+(defun foo ()
+  ;; (bar)
+  (baz))
+```
+
+### Comment multiple sexps
+
+```lisp
+;; Before (cursor on opening paren):
+|(foo)
+(bar)
+(baz)
+
+;; After 2;:
+;; (foo)
+;; (bar)
+(baz)
+```
+
+### Uncomment
+
+```lisp
+;; Before (cursor inside comment):
+;; |(foo)
+
+;; After ;:
+(foo)
+```
+
 ## Configuration
 
 ```lua
-require('lispy-kill').setup({
-  -- Keybinding (set to false to disable automatic binding)
-  key = '<C-k>',
+require('lispy-helpers').setup({
+  -- Keybinding for kill (set to false to disable automatic binding)
+  kill_key = '<C-k>',
+  
+  -- Keybinding for comment (set to false to disable)
+  comment_key = ';',
   
   -- Filetypes to enable for
   filetypes = {
@@ -181,10 +244,14 @@ require('lispy-kill').setup({
 ## API
 
 ```lua
-local lispy = require('lispy-kill')
+local lispy = require('lispy-helpers')
 
--- Main kill function
+-- Kill function
 lispy.kill()
+
+-- Comment function (optionally pass count for multiple sexps)
+lispy.comment()      -- comment 1 sexp
+lispy.comment(3)     -- comment 3 sexps
 
 -- Default filetypes (can be referenced in config)
 lispy.default_filetypes

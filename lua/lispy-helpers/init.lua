@@ -1,6 +1,6 @@
--- lispy-kill.nvim
--- A Neovim implementation of lispy-kill from the Emacs lispy package
--- Keeps parens balanced while killing text, similar to C-k in lispy-mode
+-- lispy-helpers.nvim
+-- Neovim implementation of lispy-kill and lispy-comment from the Emacs lispy package
+-- Provides structure-aware editing commands for Lisp code
 
 local M = {}
 
@@ -472,11 +472,221 @@ end
 -- Alias for backwards compatibility
 M.lispy_kill = M.kill
 
+---Get the comment string for the current buffer
+---@return string
+local function get_comment_string()
+	local cs = vim.filetype.get_option(vim.bo.filetype, "commentstring")
+	if cs and cs ~= "" then
+		-- commentstring is like ";; %s" or "# %s" or "// %s"
+		-- Extract just the comment prefix
+		local prefix = cs:match("^(.-)%%s")
+		if prefix then
+			return vim.trim(prefix)
+		end
+	end
+	-- Default to Lisp-style comments
+	return ";"
+end
+
+---Check if a line is commented (starts with comment after optional whitespace)
+---@param line string
+---@return boolean
+---@return string|nil prefix The whitespace before the comment
+---@return string|nil comment_prefix The comment characters
+local function is_line_commented(line)
+	local comment_str = get_comment_string()
+	-- Escape special pattern characters in comment string
+	local escaped = comment_str:gsub("[%(%)%.%%%+%-%*%?%[%]%^%$]", "%%%1")
+	local ws, cp = line:match("^(%s*)(" .. escaped .. "+)")
+	if cp then
+		return true, ws, cp
+	end
+	return false, nil, nil
+end
+
+---Comment a range of lines
+---@param start_row number (1-indexed)
+---@param end_row number (1-indexed)
+local function comment_lines(start_row, end_row)
+	local comment_str = get_comment_string()
+	local lines = vim.api.nvim_buf_get_lines(0, start_row - 1, end_row, false)
+
+	-- Find minimum indentation across all non-empty lines
+	local min_indent = math.huge
+	for _, line in ipairs(lines) do
+		if line:match("%S") then
+			local indent = #(line:match("^%s*") or "")
+			min_indent = math.min(min_indent, indent)
+		end
+	end
+	if min_indent == math.huge then
+		min_indent = 0
+	end
+
+	-- Add comment prefix after the minimum indentation
+	local new_lines = {}
+	for _, line in ipairs(lines) do
+		if line:match("%S") then
+			-- Insert comment after min_indent spaces
+			local before = line:sub(1, min_indent)
+			local after = line:sub(min_indent + 1)
+			table.insert(new_lines, before .. comment_str .. " " .. after)
+		else
+			-- Empty or whitespace-only line, just add comment
+			table.insert(new_lines, line .. comment_str)
+		end
+	end
+
+	vim.api.nvim_buf_set_lines(0, start_row - 1, end_row, false, new_lines)
+end
+
+---Uncomment a range of lines
+---@param start_row number (1-indexed)
+---@param end_row number (1-indexed)
+local function uncomment_lines(start_row, end_row)
+	local lines = vim.api.nvim_buf_get_lines(0, start_row - 1, end_row, false)
+	local new_lines = {}
+
+	for _, line in ipairs(lines) do
+		local is_commented, ws, cp = is_line_commented(line)
+		if is_commented then
+			-- Remove comment prefix and optional single space after it
+			local rest = line:sub(#ws + #cp + 1)
+			if rest:sub(1, 1) == " " then
+				rest = rest:sub(2)
+			end
+			table.insert(new_lines, ws .. rest)
+		else
+			table.insert(new_lines, line)
+		end
+	end
+
+	vim.api.nvim_buf_set_lines(0, start_row - 1, end_row, false, new_lines)
+end
+
+---Check if all lines in range are commented
+---@param start_row number
+---@param end_row number
+---@return boolean
+local function all_lines_commented(start_row, end_row)
+	local lines = vim.api.nvim_buf_get_lines(0, start_row - 1, end_row, false)
+	for _, line in ipairs(lines) do
+		if line:match("%S") then -- non-empty line
+			local is_commented = is_line_commented(line)
+			if not is_commented then
+				return false
+			end
+		end
+	end
+	return true
+end
+
+---Lispy comment function
+---Comment current expression or region. With count, comment that many expressions.
+---If already commented, uncomment instead.
+---@param count? number Number of sexps to comment (default 1)
+function M.comment(count)
+	count = count or 1
+
+	-- Check if we're in visual mode or have a region
+	local mode = vim.fn.mode()
+	if mode == "v" or mode == "V" or mode == "" then
+		-- Visual mode: comment the selected region
+		local start_row = vim.fn.line("'<")
+		local end_row = vim.fn.line("'>")
+
+		-- Exit visual mode
+		vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "nx", false)
+
+		if all_lines_commented(start_row, end_row) then
+			uncomment_lines(start_row, end_row)
+		else
+			comment_lines(start_row, end_row)
+		end
+		return
+	end
+
+	-- Check if we're inside a comment already
+	if in_comment() then
+		-- Uncomment current line
+		local row = vim.fn.line(".")
+		uncomment_lines(row, row)
+		return
+	end
+
+	local row, col = get_cursor()
+	local line = vim.api.nvim_get_current_line()
+	local c = char_at(line, col)
+
+	-- At opening delimiter: comment the sexp(s)
+	if open_delims[c] then
+		local start_row = row
+		local end_row = row
+
+		-- Find bounds of count sexps
+		local saved_pos = vim.fn.getpos(".")
+		for _ = 1, count do
+			local sexp_end_row, _ = find_sexp_end()
+			if sexp_end_row then
+				end_row = math.max(end_row, sexp_end_row)
+				-- Move to end and try to find next sexp
+				vim.cmd("normal! %")
+				local next_line = vim.api.nvim_get_current_line()
+				local _, next_col = get_cursor()
+				-- Skip whitespace to find next sexp
+				while next_col < #next_line do
+					local nc = char_at(next_line, next_col)
+					if nc and not nc:match("%s") then
+						if open_delims[nc] then
+							break
+						else
+							-- Not at a sexp, stop
+							break
+						end
+					end
+					next_col = next_col + 1
+				end
+				if next_col < #next_line and open_delims[char_at(next_line, next_col)] then
+					vim.api.nvim_win_set_cursor(0, { vim.fn.line("."), next_col })
+				else
+					break
+				end
+			else
+				break
+			end
+		end
+		vim.fn.setpos(".", saved_pos)
+
+		if all_lines_commented(start_row, end_row) then
+			uncomment_lines(start_row, end_row)
+		else
+			comment_lines(start_row, end_row)
+		end
+		return
+	end
+
+	-- Not at a sexp - just comment current line
+	if all_lines_commented(row, row) then
+		uncomment_lines(row, row)
+	else
+		comment_lines(row, row)
+	end
+end
+
+-- Alias for backwards compatibility
+M.lispy_comment = M.comment
+
+---@class LispyOpts
+---@field kill_key? string Keymap for kill (default: '<C-k>')
+---@field comment_key? string Keymap for comment (default: ';')
+---@field filetypes? string[] Filetypes to enable for (default: lisp-like languages)
+
 ---Setup function for lazy.nvim and other plugin managers
----@param opts? LispyKillOpts
+---@param opts? LispyOpts
 function M.setup(opts)
 	opts = opts or {}
-	local key = opts.key or "<C-k>"
+	local kill_key = opts.kill_key or "<C-k>"
+	local comment_key = opts.comment_key or ";"
 	local filetypes = opts.filetypes or M.default_filetypes
 
 	-- Create autocommand to set up keybindings for lisp filetypes
@@ -484,17 +694,33 @@ function M.setup(opts)
 		pattern = filetypes,
 		callback = function(args)
 			local buf = args.buf
-			vim.keymap.set({ "n", "i" }, key, function()
+
+			-- Kill binding
+			vim.keymap.set({ "n", "i" }, kill_key, function()
 				M.kill()
 			end, { buffer = buf, desc = "Lispy kill (balanced)" })
+
+			-- Comment binding (normal mode only, since ; is useful in insert mode)
+			vim.keymap.set("n", comment_key, function()
+				M.comment(vim.v.count1)
+			end, { buffer = buf, desc = "Lispy comment sexp" })
+
+			-- Visual mode comment
+			vim.keymap.set("v", comment_key, function()
+				M.comment()
+			end, { buffer = buf, desc = "Lispy comment region" })
 		end,
-		desc = "Setup lispy-kill keybindings for lisp filetypes",
+		desc = "Setup lispy keybindings for lisp filetypes",
 	})
 
-	-- Create a global command
+	-- Create global commands
 	vim.api.nvim_create_user_command("LispyKill", function()
 		M.kill()
 	end, { desc = "Execute lispy-kill at cursor" })
+
+	vim.api.nvim_create_user_command("LispyComment", function(cmd_opts)
+		M.comment(cmd_opts.count > 0 and cmd_opts.count or 1)
+	end, { count = true, desc = "Comment sexp(s) at cursor" })
 end
 
 return M
