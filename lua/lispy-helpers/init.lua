@@ -679,6 +679,7 @@ M.lispy_comment = M.comment
 ---@class LispyOpts
 ---@field kill_key? string Keymap for kill (default: '<C-k>')
 ---@field comment_key? string Keymap for comment (default: ';')
+---@field comment_modes? table Which modes to map comment key for  (default: { "n", "i" })
 ---@field filetypes? string[] Filetypes to enable for (default: lisp-like languages)
 
 ---Setup function for lazy.nvim and other plugin managers
@@ -688,6 +689,7 @@ function M.setup(opts)
 	local kill_key = opts.kill_key or "<C-k>"
 	local comment_key = opts.comment_key or ";"
 	local filetypes = opts.filetypes or M.default_filetypes
+	local comment_modes = opts.comment_modes or { "n", "i" }
 
 	-- Create autocommand to set up keybindings for lisp filetypes
 	vim.api.nvim_create_autocmd("FileType", {
@@ -700,8 +702,8 @@ function M.setup(opts)
 				M.kill()
 			end, { buffer = buf, desc = "Lispy kill (balanced)" })
 
-			-- Comment binding (normal mode only, since ; is useful in insert mode)
-			vim.keymap.set("n", comment_key, function()
+			-- Comment binding
+			vim.keymap.set(comment_modes, comment_key, function()
 				M.comment(vim.v.count1)
 			end, { buffer = buf, desc = "Lispy comment sexp" })
 
