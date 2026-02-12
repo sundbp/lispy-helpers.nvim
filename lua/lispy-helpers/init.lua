@@ -28,6 +28,21 @@ M.default_filetypes = {
 local open_delims = { ["("] = ")", ["["] = "]", ["{"] = "}" }
 local close_delims = { [")"] = "(", ["]"] = "[", ["}"] = "{" }
 
+---Store killed text in registers, respecting clipboard settings.
+---This mimics how visual-mode x stores deleted text so 'p' always works.
+---@param text string
+---@param regtype? string 'c' for characterwise (default), 'l' for linewise
+local function set_killed_reg(text, regtype)
+	regtype = regtype or "c"
+	vim.fn.setreg('"', text, regtype)
+	local cb = vim.o.clipboard
+	if cb:find("unnamedplus") then
+		vim.fn.setreg("+", text, regtype)
+	elseif cb:find("unnamed") then
+		vim.fn.setreg("*", text, regtype)
+	end
+end
+
 ---Get character at 0-indexed column in line
 ---@param line string
 ---@param col number 0-indexed
@@ -313,7 +328,7 @@ local function kill_region(start_row, start_col, end_row, end_col)
 		vim.api.nvim_buf_set_lines(0, start_row - 1, end_row, false, { before .. after })
 	end
 
-	vim.fn.setreg('"', killed)
+	set_killed_reg(killed)
 end
 
 ---Standard kill-line behavior
@@ -325,12 +340,12 @@ local function kill_line()
 		-- At EOL, join with next line
 		local next = vim.api.nvim_buf_get_lines(0, row, row + 1, false)[1]
 		if next then
-			vim.fn.setreg('"', "\n")
+			set_killed_reg("\n")
 			vim.api.nvim_buf_set_lines(0, row - 1, row + 1, false, { line .. next })
 		end
 	else
 		local killed = line:sub(col + 1)
-		vim.fn.setreg('"', killed)
+		set_killed_reg(killed)
 		vim.api.nvim_set_current_line(line:sub(1, col))
 	end
 end
@@ -338,8 +353,8 @@ end
 ---Kill entire whitespace line
 local function kill_whole_line()
 	local row = vim.fn.line(".")
-	local killed = vim.api.nvim_get_current_line() .. "\n"
-	vim.fn.setreg('"', killed)
+	local killed = vim.api.nvim_get_current_line()
+	set_killed_reg(killed, "l")
 
 	if vim.api.nvim_buf_line_count(0) > 1 then
 		vim.api.nvim_buf_set_lines(0, row - 1, row, false, {})
@@ -356,7 +371,7 @@ local function delete_empty_list()
 	local _, col = get_cursor()
 
 	local killed = line:sub(col, col + 1)
-	vim.fn.setreg('"', killed)
+	set_killed_reg(killed)
 
 	local new_line = line:sub(1, col - 1) .. line:sub(col + 2)
 	vim.api.nvim_set_current_line(new_line)
